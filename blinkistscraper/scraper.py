@@ -257,13 +257,13 @@ def login(driver, language, email, password):
         library_url = f"https://www.blinkist.com/{language}/nc/library"
         if not driver.current_url.rstrip('/') == library_url:
             driver.get(library_url)
-        WebDriverWait(driver, 360).until(
-            EC.presence_of_element_located(
-                (By.CLASS_NAME, "main-banner-headline-v2")
-            )
+        # wait for the page to load by checking we're no longer on the
+        # login page (resilient to site redesigns)
+        WebDriverWait(driver, 30).until(
+            lambda d: "/nc/login" not in d.current_url
         )
-    except TimeoutException as ex:
-        log.error("Error logging in. Error:", ex)
+    except TimeoutException:
+        log.error("Error logging in: timed out waiting for library page")
         return False
 
     # login successful, store login cookies for future operations
@@ -278,16 +278,13 @@ def get_categories(
     driver.get(url_with_categories)
     categories_links = []
 
-    # a lot of things fail if the page is not ready...
+    # wait for page to be ready
     try:
-        WebDriverWait(driver, 360).until(
-            EC.presence_of_element_located(
-                (By.CLASS_NAME, "main-banner-headline-v2")
-            )
+        WebDriverWait(driver, 30).until(
+            lambda d: d.execute_script("return document.readyState") == "complete"
         )
-    except TimeoutException as ex:
-        log.error("Error loading page. Error: " + str(ex))
-        # return False
+    except TimeoutException:
+        log.error("Error loading page: timed out waiting for page ready")
 
     # click the discover dropdown to reveal categories links
     try:
