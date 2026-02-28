@@ -502,35 +502,63 @@ def scrape_book_data(
             chapter_json["content"] = chapter_json.pop("text")
 
     if json_needs_content:
-        # scrape the chapter's content on the reader page
-        # and extend the book json data by inserting the scraped content
-        # in the appropriate chapter section to get a complete data file
-        book_chapters = driver.find_elements(
-            By.CSS_SELECTOR, ".chapter.chapter")
-        for chapter in book_chapters:
-            chapter_no = chapter.get_attribute("data-chapterno")
-            chapter_content = chapter.find_element(
-                By.CLASS_NAME, "chapter__content")
-            for chapter_json in book["chapters"]:
-                if chapter_json["order_no"] == int(chapter_no):
-                    chapter_json["content"] = chapter_content.get_attribute(
-                        "innerHTML")
-                    break
+        # fetch chapter content using authenticated session cookies
+        # from the browser
+        browser_cookies = {
+            c["name"]: c["value"] for c in driver.get_cookies()
+        }
+        content_fetched = False
+        for chapter_json in book["chapters"]:
+            chapter_url = (
+                f"https://api.blinkist.com/v4/books/{book['id']}"
+                f"/chapters/{chapter_json['id']}"
+            )
+            try:
+                ch_response = requests.get(
+                    url=chapter_url, cookies=browser_cookies)
+                if ch_response.status_code == 200:
+                    ch_data = ch_response.json()
+                    ch = ch_data.get("chapter", ch_data)
+                    chapter_json["content"] = ch.get(
+                        "text", ch.get("content", ""))
+                    chapter_json["supplement"] = ch.get("supplement", "")
+                    content_fetched = True
+                else:
+                    log.debug(
+                        f"Chapter API returned {ch_response.status_code} "
+                        f"for chapter {chapter_json['order_no']}")
+            except Exception as e:
+                log.debug(f"Error fetching chapter content: {e}")
 
-        # look for any supplement sections
-        book_supplements = driver.find_elements(
-            By.CSS_SELECTOR, ".chapter.supplement")
-        for supplement in book_supplements:
-            chapter_no = supplement.get_attribute("data-chapterno")
-            supplement_content = chapter.find_element(
-                By.CLASS_NAME, "chapter__content")
-            for chapter_json in book["chapters"]:
-                if chapter_json["order_no"] == int(chapter_no):
-                    if not chapter_json.get("supplement", None):
-                        supplement_text = supplement_content.get_attribute(
-                            "innerHTML")
-                        chapter_json["supplement"] = supplement_text
-                    break
+        if not content_fetched:
+            # fall back to scraping chapter content from the reader page
+            log.debug("API chapter fetch failed, trying page scraping")
+            book_chapters = driver.find_elements(
+                By.CSS_SELECTOR, ".chapter.chapter")
+            for chapter in book_chapters:
+                chapter_no = chapter.get_attribute("data-chapterno")
+                chapter_content = chapter.find_element(
+                    By.CLASS_NAME, "chapter__content")
+                for chapter_json in book["chapters"]:
+                    if chapter_json["order_no"] == int(chapter_no):
+                        chapter_json["content"] = (
+                            chapter_content.get_attribute("innerHTML"))
+                        break
+
+            # look for any supplement sections
+            book_supplements = driver.find_elements(
+                By.CSS_SELECTOR, ".chapter.supplement")
+            for supplement in book_supplements:
+                chapter_no = supplement.get_attribute("data-chapterno")
+                supplement_content = chapter.find_element(
+                    By.CLASS_NAME, "chapter__content")
+                for chapter_json in book["chapters"]:
+                    if chapter_json["order_no"] == int(chapter_no):
+                        if not chapter_json.get("supplement", None):
+                            supplement_text = (
+                                supplement_content.get_attribute("innerHTML"))
+                            chapter_json["supplement"] = supplement_text
+                        break
 
     # if we are scraping by category, add it to the book metadata
     book["category"] = category["label"]
