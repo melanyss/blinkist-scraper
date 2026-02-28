@@ -434,16 +434,48 @@ def scrape_book_data(
     if not driver.current_url == book_url:
         driver.get(book_url)
 
+    # wait for page to load
+    try:
+        WebDriverWait(driver, 15).until(
+            lambda d: d.execute_script("return document.readyState") == "complete"
+        )
+    except TimeoutException:
+        pass
+
+    log.debug(f"Current URL after navigation: {driver.current_url}")
+
     # check for re-direct to the upgrade page
     detect_needs_upgrade(driver)
 
-    reader = driver.find_element(By.CLASS_NAME, "reader__container")
+    # extract slug from URL
+    slug = book_url.rstrip("/").split("/")[-1]
 
-    # get the book's metadata from the blinkist API using its ID
-    book_id = reader.get_attribute("data-book-id")
-    book_json = requests.get(
-        url=f"https://api.blinkist.com/v4/books/{book_id}").json()
-    book = book_json["book"]
+    # try to get book data from the API using the slug directly
+    # (works regardless of page redesigns)
+    book = None
+    slug_response = requests.get(
+        url=f"https://api.blinkist.com/v4/books/{slug}")
+    if slug_response.status_code == 200:
+        book_json = slug_response.json()
+        book = book_json["book"]
+        log.debug(f"Found book via API: {book['title']}")
+    else:
+        # fall back to extracting book ID from the reader page
+        try:
+            reader = driver.find_element(By.CLASS_NAME, "reader__container")
+            book_id = reader.get_attribute("data-book-id")
+            book_json = requests.get(
+                url=f"https://api.blinkist.com/v4/books/{book_id}").json()
+            book = book_json["book"]
+        except NoSuchElementException:
+            log.error(
+                f"Could not find book data for {book_url}. "
+                "The Blinkist API may have changed."
+            )
+            return None, False
+
+    if not book:
+        return None, False
 
     if match_language and book["language"] != match_language:
         log.warning(
