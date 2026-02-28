@@ -7,8 +7,7 @@ import sys
 from shutil import copyfile as copy_file
 
 import chromedriver_autoinstaller
-from seleniumwire import webdriver
-# from selenium.webdriver.chrome.options import Options
+from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.common.exceptions import ElementNotInteractableException
@@ -51,7 +50,8 @@ def store_login_cookies(driver):
 
 
 def initialize_driver(
-    headless=True, with_ublock=False, no_sandbox=False, chromedriver_path=None
+    headless=True, with_ublock=False, no_sandbox=False, chromedriver_path=None,
+    with_audio=False
 ):
 
     if not chromedriver_path:
@@ -102,10 +102,19 @@ def initialize_driver(
         executable_path=chromedriver_path,
         log_output=os.path.join(logs_path, "webdrive.log"),
     )
-    driver = webdriver.Chrome(
-        service=service,
-        options=chrome_options,
-    )
+
+    if with_audio:
+        # selenium-wire is only needed for audio interception
+        from seleniumwire import webdriver as wire_webdriver
+        driver = wire_webdriver.Chrome(
+            service=service,
+            options=chrome_options,
+        )
+    else:
+        driver = webdriver.Chrome(
+            service=service,
+            options=chrome_options,
+        )
 
     driver.execute_cdp_cmd(
         "Network.setUserAgentOverride",

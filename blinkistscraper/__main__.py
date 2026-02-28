@@ -344,6 +344,7 @@ def main():
             with_ublock=use_ublock,
             no_sandbox=args.no_sandbox,
             chromedriver_path=args.chromedriver,
+            with_audio=args.audio,
         )
 
         is_logged_in = scraper.login(
