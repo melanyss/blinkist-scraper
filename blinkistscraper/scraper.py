@@ -2,15 +2,16 @@ import os
 import time
 import requests
 import json
-import pickle
+
 import sys
 from shutil import copyfile as copy_file
 
 import chromedriver_autoinstaller
 from seleniumwire import webdriver
 # from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
-from selenium.common.exceptions import ElementNotVisibleException
+from selenium.common.exceptions import ElementNotInteractableException
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -26,23 +27,27 @@ log = logger.get(f"blinkistscraper.{__name__}")
 
 
 def has_login_cookies():
-    return os.path.exists("cookies.pkl")
+    return os.path.exists("cookies.json")
 
 
 def get_login_cookies():
-    return pickle.load(open("cookies.pkl", "rb"))
+    with open("cookies.json", "r") as f:
+        return json.load(f)
 
 
 def load_login_cookies(driver):
     for cookie in get_login_cookies():
-        # selenium doesn't like float-based cookies parameters
-        # if 'expiry' in cookie:
-        #   cookie['expiry'] = int(cookie['expiry'])
         driver.add_cookie(cookie)
 
 
 def store_login_cookies(driver):
-    pickle.dump(driver.get_cookies(), open("cookies.pkl", "wb"))
+    cookies = driver.get_cookies()
+    # filter out non-serializable expiry values
+    for cookie in cookies:
+        if "expiry" in cookie:
+            cookie["expiry"] = int(cookie["expiry"])
+    with open("cookies.json", "w") as f:
+        json.dump(cookies, f, indent=2)
 
 
 def initialize_driver(
@@ -73,8 +78,6 @@ def initialize_driver(
     chrome_options.add_argument("--disable-logging")
     if no_sandbox:
         chrome_options.add_argument("--no-sandbox")
-    # allows selenium to accept cookies with a non-int64 'expiry' value
-    chrome_options.add_experimental_option("w3c", False)
     # removes the 'DevTools listening' log message
     chrome_options.add_experimental_option(
         "excludeSwitches", ["enable-logging"])
@@ -95,12 +98,12 @@ def initialize_driver(
     if not (os.path.isdir(logs_path)):
         os.makedirs(logs_path)
 
-    driver = webdriver.Chrome(
+    service = Service(
         executable_path=chromedriver_path,
-        service_log_path=os.path.join(logs_path, "webdrive.log"),
-        # Don't verify self-signed cert, should help with 502 errors
-        # (https://github.com/wkeeling/selenium-wire/issues/55)
-        # seleniumwire_options={"verify_ssl": False},
+        log_output=os.path.join(logs_path, "webdrive.log"),
+    )
+    driver = webdriver.Chrome(
+        service=service,
         options=chrome_options,
     )
 
@@ -132,7 +135,7 @@ def initialize_driver(
         )
 
         # Un-hide the file upload button so we can use it
-        element = driver.find_elements_by_class_name("hidden")
+        element = driver.find_elements(By.CLASS_NAME, "hidden")
         driver.execute_script(
             "document.getElementsByClassName('hidden')[0].className = ''",
             element
@@ -142,8 +145,8 @@ def initialize_driver(
         uBlock_settings_file = str(
             os.path.join(os.getcwd(), "bin", "ublock", "ublock-settings.txt")
         )
-        driver.find_element_by_id(
-            "restoreFilePicker").send_keys(uBlock_settings_file)
+        driver.find_element(
+            By.ID, "restoreFilePicker").send_keys(uBlock_settings_file)
         try:
             WebDriverWait(driver, 3).until(EC.alert_is_present())
             # click ok on pop up to accept overwrite
@@ -197,14 +200,14 @@ def login(driver, language, email, password):
                 (By.CLASS_NAME, "cookie-disclaimer__cta")
             )
         )
-        driver.find_element_by_class_name(
-            "cookie-disclaimer__cta").click()
+        driver.find_element(
+            By.CLASS_NAME, "cookie-disclaimer__cta").click()
     except Exception:
         pass
 
     # check for the login email input. if not found, assume we're logged in
     try:
-        driver.find_element_by_id("login-form_login_email")
+        driver.find_element(By.ID, "login-form_login_email")
     except NoSuchElementException:
         is_logged_in = True
 
@@ -212,12 +215,12 @@ def login(driver, language, email, password):
     # provided login credentials
     if not is_logged_in:
         log.info("Not logged into Blinkist. Logging in...")
-        driver.find_element_by_id(
-            "login-form_login_email").send_keys(email)
-        driver.find_element_by_id(
-            "login-form_login_password").send_keys(password)
+        driver.find_element(
+            By.ID, "login-form_login_email").send_keys(email)
+        driver.find_element(
+            By.ID, "login-form_login_password").send_keys(password)
         # click the "login" button
-        driver.find_element_by_name("commit").click()
+        driver.find_element(By.NAME, "commit").click()
 
     try:
         log.info("Logged into Blinkist. Loading Library...")
@@ -264,13 +267,13 @@ def get_categories(
                     (By.CLASS_NAME, "header-menu__trigger")
                 )
             )
-        categories_menu = driver.find_element_by_class_name(
-            "header-menu__trigger")
+        categories_menu = driver.find_element(
+            By.CLASS_NAME, "header-menu__trigger")
         categories_menu.click()
     except NoSuchElementException:
         log.warning("Could not find categories dropdown element")
         return
-    except ElementNotVisibleException:
+    except ElementNotInteractableException:
         # element not interactable
         log.debug("Found the dropdown element, but could not click it. "
                   "Using fallback JS code.")
@@ -283,7 +286,7 @@ def get_categories(
     categories_elements = ["discover-menu__categories", "category-list"]
     for classname in categories_elements:
         try:
-            categories_list = driver.find_element_by_class_name(classname)
+            categories_list = driver.find_element(By.CLASS_NAME, classname)
             break
         except Exception:
             log.debug(
@@ -294,11 +297,11 @@ def get_categories(
             "Could not find a categories container element")
 
     # parse the invidual category links
-    categories_items = categories_list.find_elements_by_tag_name("li")
+    categories_items = categories_list.find_elements(By.TAG_NAME, "li")
     for item in categories_items:
-        link = item.find_element_by_tag_name("a")
+        link = item.find_element(By.TAG_NAME, "a")
         href = link.get_attribute("href")
-        label = link.find_element_by_tag_name("span").get_attribute(
+        label = link.find_element(By.TAG_NAME, "span").get_attribute(
             "innerHTML")
 
         # Do not add this category if specific_categories is specified AND
@@ -333,7 +336,7 @@ def get_all_books_for_categories(driver, category):
     log.info(f"Getting all books for category {category['label']}...")
     books_links = []
     driver.get(category["url"] + "/books")
-    books_items = driver.find_elements_by_class_name("letter-book-list__item")
+    books_items = driver.find_elements(By.CLASS_NAME, "letter-book-list__item")
     for item in books_items:
         href = item.get_attribute("href")
         books_links.append(href)
@@ -350,7 +353,7 @@ def get_all_books(driver, match_language):
     if match_language:
         selector += f"[href$='{match_language}']"
 
-    books_items = driver.find_elements_by_css_selector(selector)
+    books_items = driver.find_elements(By.CSS_SELECTOR, selector)
 
     for item in books_items:
         href = item.get_attribute("href")
@@ -361,8 +364,8 @@ def get_all_books(driver, match_language):
 
 def get_daily_book_url(driver, language):
     driver.get(f"https://www.blinkist.com/{language}/nc/daily")
-    daily_book_url = driver.find_element_by_css_selector(
-        ".daily-book__infos a")
+    daily_book_url = driver.find_element(
+        By.CSS_SELECTOR, ".daily-book__infos a")
     if daily_book_url:
         return daily_book_url.get_attribute("href")
     else:
@@ -406,7 +409,7 @@ def scrape_book_data(
     # check for re-direct to the upgrade page
     detect_needs_upgrade(driver)
 
-    reader = driver.find_element_by_class_name("reader__container")
+    reader = driver.find_element(By.CLASS_NAME, "reader__container")
 
     # get the book's metadata from the blinkist API using its ID
     book_id = reader.get_attribute("data-book-id")
@@ -446,8 +449,8 @@ def scrape_book_data(
             By.CSS_SELECTOR, ".chapter.chapter")
         for chapter in book_chapters:
             chapter_no = chapter.get_attribute("data-chapterno")
-            chapter_content = chapter.find_element_by_class_name(
-                "chapter__content")
+            chapter_content = chapter.find_element(
+                By.CLASS_NAME, "chapter__content")
             for chapter_json in book["chapters"]:
                 if chapter_json["order_no"] == int(chapter_no):
                     chapter_json["content"] = chapter_content.get_attribute(
@@ -459,8 +462,8 @@ def scrape_book_data(
             By.CSS_SELECTOR, ".chapter.supplement")
         for supplement in book_supplements:
             chapter_no = supplement.get_attribute("data-chapterno")
-            supplement_content = chapter.find_element_by_class_name(
-                "chapter__content")
+            supplement_content = chapter.find_element(
+                By.CLASS_NAME, "chapter__content")
             for chapter_json in book["chapters"]:
                 if chapter_json["order_no"] == int(chapter_no):
                     if not chapter_json.get("supplement", None):

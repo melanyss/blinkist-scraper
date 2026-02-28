@@ -154,6 +154,7 @@ logs
 
 # Scraper Cookies:
 *.pkl
+cookies.json
 
 # Poetry .lock file
 poetry.lock

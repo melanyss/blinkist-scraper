@@ -4,6 +4,8 @@ import os
 import glob
 import time
 
+from dotenv import load_dotenv
+
 import scraper
 import generator
 import logger
@@ -48,6 +50,8 @@ def scraped_audio_exists(book_json):
 
 
 def main():
+    load_dotenv()
+
     parser = argparse.ArgumentParser(
         description="Scrape blinkist.com and generate pretty output"
     )
@@ -178,7 +182,13 @@ def main():
         action="store_true",
         default=False,
         help="Generate a formatted pdf document for the book. Requires "
-        "wkhtmltopdf"
+        "weasyprint (preferred) or wkhtmltopdf"
+    )
+    parser.add_argument(
+        "--create-markdown",
+        action="store_true",
+        default=False,
+        help="Generate a formatted markdown document for the book"
     )
     parser.add_argument(
         "--save-cover",
@@ -219,17 +229,28 @@ def main():
         "-v", "--verbose", action="store_true", help="Increases logging verbosity"
     )
 
-    if "--no-scrape" not in sys.argv:
-        parser.add_argument(
-            "email",
-            help="The email to log into your premium Blinkist account"
-        )
-        parser.add_argument(
-            "password",
-            help="The password to log into your premium Blinkist account"
-        )
+    parser.add_argument(
+        "--email",
+        default=os.environ.get("BLINKIST_EMAIL"),
+        help="The email to log into your premium Blinkist account "
+        "(or set BLINKIST_EMAIL env var / .env file)"
+    )
+    parser.add_argument(
+        "--password",
+        default=os.environ.get("BLINKIST_PASSWORD"),
+        help="The password to log into your premium Blinkist account "
+        "(or set BLINKIST_PASSWORD env var / .env file)"
+    )
 
     args = parser.parse_args()
+
+    if not args.no_scrape and (not args.email or not args.password):
+        parser.error(
+            "Email and password are required when scraping. Provide them via:\n"
+            "  1. CLI flags: --email you@example.com --password yourpass\n"
+            "  2. Environment variables: BLINKIST_EMAIL / BLINKIST_PASSWORD\n"
+            "  3. A .env file (see .env.example)"
+        )
 
     # set up logger verbosity
     logger.set_verbose(log, args.verbose)
@@ -241,6 +262,8 @@ def main():
             generator.generate_book_epub(book_json)
         if args.create_pdf:
             generator.generate_book_pdf(book_json, cover_img)
+        if args.create_markdown:
+            generator.generate_book_markdown(book_json)
 
     def scrape_book(
         driver, processed_books, book_url, category, match_language

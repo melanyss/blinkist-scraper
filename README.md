@@ -4,13 +4,44 @@ A python script to download book summaries and audio from [Blinkist](https://www
 
 ## Installation / Requirements
 
+**Python 3.9+** is required.
+
 Make sure you're in your virtual environment of choice, then run
 - `poetry install --no-dev` if you have [Poetry](https://python-poetry.org/) installed
 - `pip install -r requirements.txt` otherwise
 
+For PDF generation, optionally install [weasyprint](https://weasyprint.org/) (recommended):
+```bash
+pip install weasyprint
+# macOS: brew install pango  (weasyprint dependency)
+```
+
 This script uses [ChromeDriver](chromedriver.chromium.org) to automate the Google Chrome browser - therefore Google Chrome needs to be installed in order to work.
 
 The script will automatically try to download and use the appropriate chromedriver distribution for your OS and Chrome version. If this doesn't work, download the right version for you from https://chromedriver.chromium.org/downloads and use the `--chromedriver` argument to specify its path at runtime.
+
+## Credentials
+
+Email and password can be provided in three ways (in order of precedence):
+
+1. **CLI flags** (not recommended — visible in process list and shell history):
+   ```bash
+   python blinkistscraper --email you@example.com --password yourpass
+   ```
+
+2. **Environment variables**:
+   ```bash
+   export BLINKIST_EMAIL=you@example.com
+   export BLINKIST_PASSWORD=yourpass
+   python blinkistscraper
+   ```
+
+3. **`.env` file** (recommended):
+   ```bash
+   cp .env.example .env
+   # edit .env with your credentials
+   python blinkistscraper
+   ```
 
 ## Usage
 
@@ -23,16 +54,16 @@ usage: blinkistscraper [-h] [--language {en,de}] [--match-language]
                        [--categories CATEGORIES [CATEGORIES ...]]
                        [--ignore-categories IGNORE_CATEGORIES [IGNORE_CATEGORIES ...]]
                        [--create-html] [--create-epub] [--create-pdf]
-                       [--save-cover] [--embed-cover-art] 
+                       [--create-markdown] [--save-cover] [--embed-cover-art]
                        [--chromedriver CHROMEDRIVER] [--no-ublock] [--no-sandbox] [-v]
-                       email password
-
-positional arguments:
-  email                 The email to log into your premium Blinkist account
-  password              The password to log into your premium Blinkist account
+                       [--email EMAIL] [--password PASSWORD]
 
 optional arguments:
   -h, --help            show this help message and exit
+  --email EMAIL         The email to log into your premium Blinkist account
+                        (or set BLINKIST_EMAIL env var / .env file)
+  --password PASSWORD   The password to log into your premium Blinkist account
+                        (or set BLINKIST_PASSWORD env var / .env file)
   --language {en,de}    The language to scrape books in - either 'en' for
                         english or 'de' for german
   --match-language      Skip scraping books if not in the requested language
@@ -76,7 +107,8 @@ optional arguments:
   --create-html         Generate a formatted html document for the book
   --create-epub         Generate a formatted epub document for the book
   --create-pdf          Generate a formatted pdf document for the book.
-                        Requires wkhtmltopdf
+                        Requires weasyprint (preferred) or wkhtmltopdf
+  --create-markdown     Generate a formatted markdown document for the book
   --save-cover          Save a copy of the Blink cover artwork in the folder
   --embed-cover-art     Embed the Blink cover artwork into the concatenated
                         audio file (works with '--concat-audio' only)
@@ -88,12 +120,12 @@ optional arguments:
                         ublock. If you want to use ublock content blocking, then
                         run the script again without this flag.
   --no-sandbox          When running as root (e.g. in Docker), Chrome requires
-                        the '--no-sandbox' argument     
+                        the '--no-sandbox' argument
   -v, --verbose         Increases logging verbosity
 ```
 
 ## Basic usage
-`python blinkistscraper email password` where email and password are the login details to your premium Blinkist account.
+`python blinkistscraper --email you@example.com --password yourpass` or set up a `.env` file with your credentials (see [Credentials](#credentials) above).
 
 The script uses Selenium with a Chrome driver to scrape the site automatically using the provided credentials. Sometimes during scraping, a captcha block-page will appear. When this happens, the script will try to pause and wait for the user to solve it. After some time (i.e. one minute), the script will time out.
 The output files are stored in the `books` folder, arranged in subfolders by category and by the book's title and author.
@@ -104,7 +136,10 @@ The script builds a nice-looking html version of the book by using the 'book.htm
 The special field `{__chapters__}` is replaced with all the book's chapters. Chapters are created by parsing each `chapter` object in the book metadata and using the `chapter.html` template file in the same fashion, replacing tokens with the parameters inside the `chapter` object.
 
 ## Generating .pdf
-Add the `--create-pdf` argument to the script to generate a .pdf file from the .html one. This requires the [wkhtmltopdf](https://wkhtmltopdf.org/) tool to be installed and present in the PATH.
+Add the `--create-pdf` argument to the script to generate a .pdf file from the .html one. The script will try [weasyprint](https://weasyprint.org/) first (pip-installable, recommended), and fall back to [wkhtmltopdf](https://wkhtmltopdf.org/) if weasyprint is not installed. At least one of the two must be available.
+
+## Generating .md (Markdown)
+Add the `--create-markdown` argument to generate a clean Markdown version of each book. This is useful for feeding book summaries into AI agents or LLMs. The output includes the book title, author, category, about section, who-should-read section, all chapters with content converted from HTML to Markdown, and the about-the-author section.
 
 ## Downloading audio
 The script download audio blinks as well when adding the `--audio` argument. This is done by waiting for a request to the Blinkist's `audio` endpoint in their `library` api for the first chapter's audio blink which is sent as soon as the user navigates to a book's reader page; then re-using the valid request's headers to build additional requests to the rest of the chapter's audio files. The files are downloaded as `.m4a`.
@@ -113,7 +148,7 @@ The script download audio blinks as well when adding the `--audio` argument. Thi
 Add the `--concat-audio` argument to the script to concatenate the individual audio blinks into a single file and tag it with the appropriate book title and author. Doing this will delete all individual blinks and replace them with one audio file (per book), only. To keep both the individual blink audio files, also, use the `--keep-noncat` argument together with the `--concat-audio` argument (i.e. `--concat-audio --keep-noncat`). This requires the [ffmpeg](https://www.ffmpeg.org/) tool to be installed and present in the PATH.
 
 ## Processing book dumps with no scraping
-During scraping, the script saves all book's metadata in json files inside the `dump` folder. Those can be used by the script to re-generate the .html, .epub and .pdf output files without having to scrape the website again. To do so, pass the `--no-scrape` argument to the script without providing an email or a password.
+During scraping, the script saves all book's metadata in json files inside the `dump` folder. Those can be used by the script to re-generate the .html, .epub, .md and .pdf output files without having to scrape the website again. To do so, pass the `--no-scrape` argument to the script without providing an email or a password.
 
 ## Scraping with a free account
 If you don't have a Blinkist premium account, you can still scrape the free daily book. To do so automatically, pass the `--daily-book` argument - this behaves like scraping a single book.

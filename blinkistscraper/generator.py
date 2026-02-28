@@ -1,4 +1,7 @@
 import os
+import re
+import subprocess
+from html import unescape
 from ebooklib import epub
 
 # from utils import *
@@ -134,13 +137,6 @@ def generate_book_epub(book_json_or_file):
 
 
 def generate_book_pdf(book_json_or_file, cover_img_file=False):
-    if not is_installed("wkhtmltopdf"):
-        log.warning(
-            "wkhtmltopdf needs to be installed and added to PATH to generate "
-            "pdf files"
-        )
-        return
-
     book_json = get_or_read_json(book_json_or_file)
     filepath = get_book_pretty_filepath(book_json)
     filename = get_book_pretty_filename(book_json, ".pdf")
@@ -159,9 +155,25 @@ def generate_book_pdf(book_json_or_file, cover_img_file=False):
         generate_book_html(book_json_or_file, cover_img_file)
 
     log.debug(f"Generating .pdf for {book_json['slug']}")
-    pdf_command = f'wkhtmltopdf --quiet "{html_file}" "{pdf_file}"'
-    os.system(pdf_command)
-    return pdf_file
+
+    # try weasyprint first (pip-installable, no external binary needed)
+    try:
+        from weasyprint import HTML as WeasyHTML
+        WeasyHTML(filename=html_file).write_pdf(pdf_file)
+        return pdf_file
+    except ImportError:
+        pass
+
+    # fall back to wkhtmltopdf
+    if is_installed("wkhtmltopdf"):
+        subprocess.run(["wkhtmltopdf", "--quiet", html_file, pdf_file])
+        return pdf_file
+
+    log.warning(
+        "No PDF backend available. Install one of:\n"
+        "  pip install weasyprint  (recommended)\n"
+        "  or install wkhtmltopdf and add it to PATH"
+    )
 
 
 def combine_audio(book_json, files, keep_blinks=False, cover_img_file=False):
@@ -197,28 +209,27 @@ def combine_audio(book_json, files, keep_blinks=False, cover_img_file=False):
             # escape any quotes for the ffmpeg concat's command file list
             sanitized_file = os.path.abspath(file).replace("'", "'\\''")
             outfile.write(f"file '{sanitized_file}'\n")
-    silent = "-nostats -loglevel 0 -y"
-    concat_command = (
-        f'ffmpeg {silent} -f concat -safe 0 -i "{files_list}" -c copy '
-        f'"{combined_audio_file}"')
-    os.system(concat_command)
+    subprocess.run([
+        "ffmpeg", "-nostats", "-loglevel", "0", "-y",
+        "-f", "concat", "-safe", "0",
+        "-i", files_list, "-c", "copy", combined_audio_file
+    ])
+    tag_args = [
+        "ffmpeg", "-nostats", "-loglevel", "0", "-y",
+        "-i", combined_audio_file,
+    ]
     if cover_img_file:
-        cover_embed = (
-            f'-i "{cover_img_file}" -map 0 -map 1 -disposition:v:0 '
-            'attached_pic')
-    else:
-        cover_embed = ""
-    title_metadata = f"-metadata title=\"{book_json['title']}\""
-    author_metadata = f"-metadata artist=\"{book_json['author']}\""
-    category_metadata = f"-metadata album=\"{book_json['category']}\""
-    genre_metadata = '-metadata genre="Blinkist"'
-    tag_command = (
-        f'ffmpeg {silent} -i "{combined_audio_file}" {cover_embed} -c copy '
-        f"{title_metadata} {author_metadata} "
-        f"{category_metadata} {genre_metadata}"
-    )
-    tag_command += f' "{tagged_audio_file}"'
-    os.system(tag_command)
+        tag_args += ["-i", cover_img_file, "-map", "0", "-map", "1",
+                     "-disposition:v:0", "attached_pic"]
+    tag_args += [
+        "-c", "copy",
+        "-metadata", f"title={book_json['title']}",
+        "-metadata", f"artist={book_json['author']}",
+        "-metadata", f"album={book_json['category']}",
+        "-metadata", "genre=Blinkist",
+        tagged_audio_file,
+    ]
+    subprocess.run(tag_args)
 
     # clean up files
     if os.path.exists(files_list):
@@ -231,3 +242,87 @@ def combine_audio(book_json, files, keep_blinks=False, cover_img_file=False):
         for file in files:
             if os.path.exists(file):
                 os.remove(os.path.abspath(file))
+
+
+def strip_html_tags(html_content):
+    if not html_content:
+        return ""
+    text = str(html_content)
+    # convert block-level elements to markdown equivalents
+    text = re.sub(r'<h[1-6][^>]*>(.*?)</h[1-6]>', r'### \1\n', text)
+    text = re.sub(r'<blockquote[^>]*>(.*?)</blockquote>',
+                  lambda m: "> " + m.group(1).strip(), text, flags=re.DOTALL)
+    # inline formatting
+    text = re.sub(r'<strong[^>]*>(.*?)</strong>', r'**\1**', text)
+    text = re.sub(r'<b[^>]*>(.*?)</b>', r'**\1**', text)
+    text = re.sub(r'<em[^>]*>(.*?)</em>', r'*\1*', text)
+    text = re.sub(r'<i[^>]*>(.*?)</i>', r'*\1*', text)
+    # list items
+    text = re.sub(r'<li[^>]*>(.*?)</li>', r'- \1\n', text, flags=re.DOTALL)
+    # paragraphs to double newlines
+    text = re.sub(r'<p[^>]*>(.*?)</p>', r'\1\n\n', text, flags=re.DOTALL)
+    text = re.sub(r'<br\s*/?>', '\n', text)
+    # strip remaining tags
+    text = re.sub(r'<[^>]+>', '', text)
+    # decode HTML entities
+    text = unescape(text)
+    # normalize whitespace (collapse multiple blank lines)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
+def generate_book_markdown(book_json_or_file):
+    book_json = get_or_read_json(book_json_or_file)
+    filepath = get_book_pretty_filepath(book_json)
+    filename = get_book_pretty_filename(book_json, ".md")
+    md_file = os.path.join(filepath, filename)
+    if os.path.exists(md_file):
+        log.debug(f"Markdown file for {book_json['slug']} already exists, "
+                  "not generating...")
+        return md_file
+    log.info(f"Generating .md for {book_json['slug']}")
+
+    lines = []
+    lines.append(f"# {book_json['title']}")
+    lines.append("")
+    lines.append(f"**Author:** {book_json['author']}")
+    if book_json.get("category"):
+        lines.append(f"**Category:** {book_json['category']}")
+    lines.append("")
+
+    if book_json.get("about_the_book"):
+        lines.append("## About This Book")
+        lines.append("")
+        lines.append(strip_html_tags(book_json["about_the_book"]))
+        lines.append("")
+
+    if book_json.get("who_should_read"):
+        lines.append("## Who Should Read It")
+        lines.append("")
+        lines.append(strip_html_tags(book_json["who_should_read"]))
+        lines.append("")
+
+    for chapter in book_json.get("chapters", []):
+        title = chapter.get("title", f"Chapter {chapter.get('order_no', '')}")
+        lines.append(f"## {title}")
+        lines.append("")
+        content = strip_html_tags(chapter.get("content", ""))
+        if content:
+            lines.append(content)
+            lines.append("")
+        supplement = strip_html_tags(chapter.get("supplement", ""))
+        if supplement:
+            lines.append(supplement)
+            lines.append("")
+
+    if book_json.get("about_the_author"):
+        lines.append("## About the Author")
+        lines.append("")
+        lines.append(strip_html_tags(book_json["about_the_author"]))
+        lines.append("")
+
+    if not os.path.exists(filepath):
+        os.makedirs(filepath)
+    with open(md_file, "w", encoding="utf-8") as outfile:
+        outfile.write("\n".join(lines))
+    return md_file
