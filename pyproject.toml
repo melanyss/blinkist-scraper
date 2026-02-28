@@ -12,6 +12,8 @@ EbookLib = "^0.18"
 requests = "^2.31.0"
 selenium = "^4.15.0"
 selenium-wire = "^5.1.0"
+blinker = ">=1.6,<1.8"
+setuptools = ">=70.0,<81"
 python-dotenv = "^1.0.0"
 weasyprint = {version = "^62.0", optional = true}
 
