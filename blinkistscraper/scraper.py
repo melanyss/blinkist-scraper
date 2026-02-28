@@ -427,6 +427,8 @@ def scrape_book_data(
     # if not, proceed scraping the reader page
     log.info(f"Scraping book at {book_url}")
     if "/nc/reader/" not in book_url:
+        # handle both old (/books/) and new (/app/books/) URL formats
+        book_url = book_url.replace("/app/books/", "/nc/reader/")
         book_url = book_url.replace("/books/", "/nc/reader/")
 
     if not driver.current_url == book_url:
