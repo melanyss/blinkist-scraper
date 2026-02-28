@@ -101,8 +101,8 @@ def generate_book_epub(book_json_or_file):
             lang="hr",
         )
 
-        title = chapter_json.get("title")
-        content = chapter_json.get("content")
+        title = chapter_json.get("title") or ""
+        content = chapter_json.get("content") or ""
         supplement = chapter_json.get("supplement") or ""
 
         chapter.content = f"<h2>{title}</h2>" + content + supplement
