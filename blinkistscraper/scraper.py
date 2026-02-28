@@ -129,32 +129,52 @@ def initialize_driver(
     if with_ublock:
         log.debug("Configuring uBlock")
 
-        # set up uBlock
-        driver.get(
-            "chrome-extension://ilchdfhfciidacichehpmmjclkbfaecg/settings.html"
-        )
-
-        # Un-hide the file upload button so we can use it
-        element = driver.find_elements(By.CLASS_NAME, "hidden")
-        driver.execute_script(
-            "document.getElementsByClassName('hidden')[0].className = ''",
-            element
-        )
-        # scroll down (for debugging)
-        driver.execute_script("window.scrollTo(0, 2000)")
-        uBlock_settings_file = str(
-            os.path.join(os.getcwd(), "bin", "ublock", "ublock-settings.txt")
-        )
-        driver.find_element(
-            By.ID, "restoreFilePicker").send_keys(uBlock_settings_file)
         try:
-            WebDriverWait(driver, 3).until(EC.alert_is_present())
-            # click ok on pop up to accept overwrite
-            driver.switch_to.alert.accept()
-        except TimeoutException:
-            log.error("Timeout waiting for ublock config overwrite alert")
-        # leave uBlock config
-        driver.get("about:blank")
+            # set up uBlock
+            driver.get(
+                "chrome-extension://ilchdfhfciidacichehpmmjclkbfaecg"
+                "/settings.html"
+            )
+
+            # check if extension loaded (Chrome may block outdated extensions)
+            element = driver.find_elements(By.CLASS_NAME, "hidden")
+            if not element:
+                log.warning(
+                    "uBlock extension page did not load (may be blocked by "
+                    "Chrome). Continuing without uBlock."
+                )
+                driver.get("about:blank")
+            else:
+                # Un-hide the file upload button so we can use it
+                driver.execute_script(
+                    "document.getElementsByClassName('hidden')[0]"
+                    ".className = ''",
+                    element
+                )
+                # scroll down (for debugging)
+                driver.execute_script("window.scrollTo(0, 2000)")
+                uBlock_settings_file = str(
+                    os.path.join(
+                        os.getcwd(), "bin", "ublock", "ublock-settings.txt")
+                )
+                driver.find_element(
+                    By.ID, "restoreFilePicker"
+                ).send_keys(uBlock_settings_file)
+                try:
+                    WebDriverWait(driver, 3).until(EC.alert_is_present())
+                    # click ok on pop up to accept overwrite
+                    driver.switch_to.alert.accept()
+                except TimeoutException:
+                    log.error(
+                        "Timeout waiting for ublock config overwrite alert")
+                # leave uBlock config
+                driver.get("about:blank")
+        except Exception as e:
+            log.warning(
+                f"Failed to configure uBlock extension: {e}. "
+                "Continuing without it."
+            )
+            driver.get("about:blank")
 
     return driver
 
