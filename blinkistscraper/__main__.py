@@ -3,6 +3,21 @@ import sys
 import os
 import glob
 import time
+import platform
+import shutil
+import json
+
+# on macOS, ensure Homebrew's native libs (pango, gobject, etc.) are findable
+# by WeasyPrint and other cffi-based packages
+if platform.system() == "Darwin":
+    for lib_path in ("/opt/homebrew/lib", "/usr/local/lib"):
+        if os.path.isdir(lib_path):
+            existing = os.environ.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+            if lib_path not in existing:
+                os.environ["DYLD_FALLBACK_LIBRARY_PATH"] = (
+                    f"{lib_path}:{existing}" if existing else lib_path
+                )
+            break
 
 from dotenv import load_dotenv
 
@@ -322,7 +337,24 @@ def main():
             f"in {formatted_time}"
         )
 
-    # start scraping
+    def clean_failed_book_artifacts(book_url):
+        from utils import get_book_dump_filename, get_book_pretty_filepath
+
+        dump_path = get_book_dump_filename(book_url)
+        if not os.path.exists(dump_path):
+            return
+        try:
+            with open(dump_path) as f:
+                book_json = json.load(f)
+            book_dir = get_book_pretty_filepath(book_json)
+            if os.path.isdir(book_dir):
+                shutil.rmtree(book_dir, ignore_errors=True)
+        except (OSError, json.JSONDecodeError) as e:
+            log.debug(f"Cleanup warning for {book_url}: {e}")
+        try:
+            os.remove(dump_path)
+        except OSError as e:
+            log.debug(f"Could not remove dump {dump_path}: {e}")
     log.info("Starting scrape run...")
     processed_books = []
     start_time = time.time()
@@ -365,18 +397,71 @@ def main():
                     match_language=match_language,
                 )
             elif args.books:
-                # scrape list of books
-                with open(args.books, "r") as books_urls:
-                    for book_url in books_urls.readlines():
+                # scrape list of books: resilient batch run
+                with open(args.books, "r") as f:
+                    remaining_urls = [
+                        line.strip() for line in f if line.strip()
+                    ]
+                # Prune URLs that already have complete output on disk (from
+                # this or a previous run), so the list reflects what's left.
+                def book_already_done(book_url):
+                    from utils import get_book_dump_filename, get_book_pretty_filepath
+                    dump_path = get_book_dump_filename(book_url)
+                    if not os.path.exists(dump_path):
+                        return False
+                    try:
+                        with open(dump_path) as fp:
+                            book_json = json.load(fp)
+                        book_dir = get_book_pretty_filepath(book_json)
+                        return os.path.isdir(book_dir)
+                    except (OSError, json.JSONDecodeError, KeyError):
+                        return False
+
+                still_pending = [u for u in remaining_urls if not book_already_done(u)]
+                pruned = len(remaining_urls) - len(still_pending)
+                if pruned > 0:
+                    remaining_urls = still_pending
+                    tmp_path = args.books + ".tmp"
+                    with open(tmp_path, "w") as f:
+                        f.write("\n".join(remaining_urls))
+                        if remaining_urls:
+                            f.write("\n")
+                    os.replace(tmp_path, args.books)
+                    log.info(
+                        f"Pruned {pruned} already-completed book(s) from list; "
+                        f"{len(remaining_urls)} remaining"
+                    )
+
+                for book_url in remaining_urls:
+                    try:
                         dump_exists = scrape_book(
                             driver,
                             processed_books,
-                            book_url.strip(),
+                            book_url,
                             category={"label": args.book_category},
                             match_language=match_language,
                         )
-                        if not dump_exists:
-                            time.sleep(args.cooldown)
+                    except Exception as e:
+                        log.exception(e)
+                        clean_failed_book_artifacts(book_url)
+                        continue
+                    if book_url in processed_books:
+                        remaining_urls = [
+                            u for u in remaining_urls if u != book_url
+                        ]
+                        tmp_path = args.books + ".tmp"
+                        with open(tmp_path, "w") as f:
+                            f.write("\n".join(remaining_urls))
+                            if remaining_urls:
+                                f.write("\n")
+                        os.replace(tmp_path, args.books)
+                    else:
+                        clean_failed_book_artifacts(book_url)
+                        log.warning(
+                            f"Book skipped or failed: {book_url}"
+                        )
+                    if not dump_exists:
+                        time.sleep(args.cooldown)
             else:
                 # scrape all categories
                 categories = scraper.get_categories(

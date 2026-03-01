@@ -410,13 +410,48 @@ def detect_needs_upgrade(driver):
         exit()
 
 
+def scrape_chapters_from_page(driver):
+    """Scrape chapter content from Blinkist reader using current Nuxt CSS selectors."""
+    try:
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "#__nuxt"))
+        )
+    except TimeoutException:
+        log.debug("Nuxt root element not found, page may use a different layout")
+        return []
+
+    time.sleep(3)
+
+    chapter_blocks = driver.find_elements(By.CSS_SELECTOR, "div.mb-8")
+    scraped_chapters = []
+    for block in chapter_blocks:
+        title = ""
+        try:
+            title_el = block.find_element(By.CSS_SELECTOR, "div > h2 > span")
+            title = title_el.text.strip()
+        except NoSuchElementException:
+            pass
+
+        content = ""
+        try:
+            content_el = block.find_element(
+                By.CSS_SELECTOR,
+                "span.transition.text-r2.text-dark-grey > span"
+            )
+            content = content_el.get_attribute("innerHTML")
+        except NoSuchElementException:
+            pass
+
+        if title or content:
+            scraped_chapters.append({"title": title, "content": content})
+
+    return scraped_chapters
+
+
 def scrape_book_data(
     driver, book_url, match_language="", category={"label": "Uncategorized"},
     force=False
 ):
-    # check if this book has already been dumped, unless we are forcing
-    # scraping, if so return the content of the dump, alonside with a flash
-    # saying it already existed
     if os.path.exists(get_book_dump_filename(book_url)) and not force:
         log.debug(
             f"Json dump for book {book_url} already exists, skipping "
@@ -424,17 +459,18 @@ def scrape_book_data(
         with open(get_book_dump_filename(book_url)) as f:
             return json.load(f), True
 
-    # if not, proceed scraping the reader page
     log.info(f"Scraping book at {book_url}")
+
+    # normalize URL to reader page format
+    original_url = book_url
     if "/nc/reader/" not in book_url:
-        # handle both old (/books/) and new (/app/books/) URL formats
+        book_url = book_url.replace("/reader/books/", "/nc/reader/")
         book_url = book_url.replace("/app/books/", "/nc/reader/")
-        book_url = book_url.replace("/books/", "/nc/reader/")
+        book_url = book_url.replace("/en/books/", "/en/nc/reader/")
 
     if not driver.current_url == book_url:
         driver.get(book_url)
 
-    # wait for page to load
     try:
         WebDriverWait(driver, 15).until(
             lambda d: d.execute_script("return document.readyState") == "complete"
@@ -442,16 +478,27 @@ def scrape_book_data(
     except TimeoutException:
         pass
 
+    # if we were redirected, try the original URL as fallback
+    actual_url = driver.current_url
+    if "/nc/reader/" not in actual_url and book_url != original_url:
+        log.debug(f"Redirected to {actual_url}, trying original URL")
+        driver.get(original_url)
+        try:
+            WebDriverWait(driver, 15).until(
+                lambda d: d.execute_script(
+                    "return document.readyState") == "complete"
+            )
+        except TimeoutException:
+            pass
+
     log.debug(f"Current URL after navigation: {driver.current_url}")
 
-    # check for re-direct to the upgrade page
     detect_needs_upgrade(driver)
 
     # extract slug from URL
     slug = book_url.rstrip("/").split("/")[-1]
 
-    # try to get book data from the API using the slug directly
-    # (works regardless of page redesigns)
+    # 1. Get book metadata from API
     book = None
     slug_response = requests.get(
         url=f"https://api.blinkist.com/v4/books/{slug}")
@@ -460,7 +507,6 @@ def scrape_book_data(
         book = book_json["book"]
         log.debug(f"Found book via API: {book['title']}")
     else:
-        # fall back to extracting book ID from the reader page
         try:
             reader = driver.find_element(By.CLASS_NAME, "reader__container")
             book_id = reader.get_attribute("data-book-id")
@@ -484,35 +530,30 @@ def scrape_book_data(
         )
         return None, False
 
-    # sanitize the book's title and author since they will be used for paths
-    # and such
     book["title"] = sanitize_name(book["title"])
     book["author"] = sanitize_name(book["author"])
 
-    # check if the book's metadata already has chapter content
-    # (this is the case for the free book of the day)
+    # 2. Check if chapters already have content (free daily book)
     json_needs_content = False
     for chapter_json in book["chapters"]:
         if "text" not in chapter_json:
             json_needs_content = True
             break
         else:
-            # change the text content key name for compatibility with the
-            # script methods
             chapter_json["content"] = chapter_json.pop("text")
 
     if json_needs_content:
-        # fetch chapter content using authenticated session cookies
-        # from the browser
+        # 3a. Try API chapter endpoints with auth cookies
         browser_cookies = {
             c["name"]: c["value"] for c in driver.get_cookies()
         }
-        content_fetched = False
+        api_failures = 0
         for chapter_json in book["chapters"]:
             chapter_url = (
                 f"https://api.blinkist.com/v4/books/{book['id']}"
                 f"/chapters/{chapter_json['id']}"
             )
+            log.debug(f"Fetching chapter from: {chapter_url}")
             try:
                 ch_response = requests.get(
                     url=chapter_url, cookies=browser_cookies)
@@ -522,52 +563,73 @@ def scrape_book_data(
                     chapter_json["content"] = ch.get(
                         "text", ch.get("content", ""))
                     chapter_json["supplement"] = ch.get("supplement", "")
-                    content_fetched = True
                 else:
+                    api_failures += 1
                     log.debug(
                         f"Chapter API returned {ch_response.status_code} "
                         f"for chapter {chapter_json['order_no']}")
             except Exception as e:
+                api_failures += 1
                 log.debug(f"Error fetching chapter content: {e}")
 
-        if not content_fetched:
-            # fall back to scraping chapter content from the reader page
-            log.debug("API chapter fetch failed, trying page scraping")
-            book_chapters = driver.find_elements(
-                By.CSS_SELECTOR, ".chapter.chapter")
-            for chapter in book_chapters:
-                chapter_no = chapter.get_attribute("data-chapterno")
-                chapter_content = chapter.find_element(
-                    By.CLASS_NAME, "chapter__content")
-                for chapter_json in book["chapters"]:
-                    if chapter_json["order_no"] == int(chapter_no):
+        if api_failures > 0 and api_failures < len(book["chapters"]):
+            log.info(
+                f"API fetch partially succeeded: "
+                f"{len(book['chapters']) - api_failures}/{len(book['chapters'])} chapters"
+            )
+
+        # 3b. If API failed for all chapters, try page scraping
+        if api_failures == len(book["chapters"]):
+            log.warning(
+                f"API chapter fetch failed for all {api_failures} chapters "
+                f"in '{book['title']}', trying page scraping"
+            )
+            scraped = scrape_chapters_from_page(driver)
+            if scraped:
+                log.debug(
+                    f"Page scraping found {len(scraped)} chapter blocks")
+                for i, chapter_json in enumerate(book["chapters"]):
+                    if i < len(scraped) and not chapter_json.get("content"):
                         chapter_json["content"] = (
-                            chapter_content.get_attribute("innerHTML"))
-                        break
+                            scraped[i].get("content", ""))
+                        if not chapter_json.get("title") and scraped[i].get("title"):
+                            chapter_json["title"] = scraped[i]["title"]
+            else:
+                log.warning(
+                    f"Page scraping found no content for '{book['title']}'. "
+                    "Output files will contain metadata only."
+                )
 
-            # look for any supplement sections
-            book_supplements = driver.find_elements(
-                By.CSS_SELECTOR, ".chapter.supplement")
-            for supplement in book_supplements:
-                chapter_no = supplement.get_attribute("data-chapterno")
-                supplement_content = chapter.find_element(
-                    By.CLASS_NAME, "chapter__content")
-                for chapter_json in book["chapters"]:
-                    if chapter_json["order_no"] == int(chapter_no):
-                        if not chapter_json.get("supplement", None):
-                            supplement_text = (
-                                supplement_content.get_attribute("innerHTML"))
-                            chapter_json["supplement"] = supplement_text
-                        break
+        # 4. Sanitize: ensure every chapter has content/supplement keys
+        for chapter_json in book["chapters"]:
+            if "content" not in chapter_json:
+                chapter_json["content"] = ""
+            if "supplement" not in chapter_json:
+                chapter_json["supplement"] = ""
 
-    # if we are scraping by category, add it to the book metadata
+    # 5. Content validation
+    chapters_with_content = sum(
+        1 for ch in book["chapters"] if ch.get("content", "").strip()
+    )
+    total_chapters = len(book["chapters"])
+    if chapters_with_content == 0:
+        log.warning(
+            f"Could not fetch content for any of {total_chapters} chapters in "
+            f"'{book['title']}'. Output files will contain metadata only."
+        )
+    elif chapters_with_content < total_chapters:
+        log.warning(
+            f"Fetched content for {chapters_with_content}/{total_chapters} "
+            f"chapters in '{book['title']}'"
+        )
+    else:
+        log.info(
+            f"Successfully fetched all {total_chapters} chapters "
+            f"for '{book['title']}'"
+        )
+
     book["category"] = category["label"]
-
-    # store the book json metadata for future use
     dump_book(book)
-
-    # return a tuple with the book json metadata, and a boolean indicating
-    # whether the json dump already existed or not
     return book, False
 
 

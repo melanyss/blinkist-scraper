@@ -63,6 +63,8 @@ def generate_book_html(book_json_or_file, cover_img_file=False):
 
     book_html = book_html.replace("{__chapters__}", "\n".join(chapters_html))
     book_html = book_html.replace("<p>&nbsp;</p>", "")
+    # remove any unreplaced {key} placeholders
+    book_html = re.sub(r'\{[a-z_]+\}', '', book_html)
 
     # finally, export the finished book html
     if not os.path.exists(filepath):
@@ -161,7 +163,7 @@ def generate_book_pdf(book_json_or_file, cover_img_file=False):
         from weasyprint import HTML as WeasyHTML
         WeasyHTML(filename=html_file).write_pdf(pdf_file)
         return pdf_file
-    except ImportError:
+    except (ImportError, OSError):
         pass
 
     # fall back to wkhtmltopdf
@@ -285,9 +287,18 @@ def generate_book_markdown(book_json_or_file):
     lines = []
     lines.append(f"# {book_json['title']}")
     lines.append("")
+    if book_json.get("subtitle"):
+        lines.append(f"*{book_json['subtitle']}*")
+        lines.append("")
     lines.append(f"**Author:** {book_json['author']}")
     if book_json.get("category"):
         lines.append(f"**Category:** {book_json['category']}")
+    if book_json.get("reading_duration"):
+        lines.append(
+            f"**Reading time:** {book_json['reading_duration']} minutes")
+    lines.append("")
+
+    lines.append("---")
     lines.append("")
 
     if book_json.get("about_the_book"):
@@ -302,6 +313,9 @@ def generate_book_markdown(book_json_or_file):
         lines.append(strip_html_tags(book_json["who_should_read"]))
         lines.append("")
 
+    lines.append("---")
+    lines.append("")
+
     for chapter in book_json.get("chapters", []):
         title = chapter.get("title", f"Chapter {chapter.get('order_no', '')}")
         lines.append(f"## {title}")
@@ -314,6 +328,9 @@ def generate_book_markdown(book_json_or_file):
         if supplement:
             lines.append(supplement)
             lines.append("")
+
+    lines.append("---")
+    lines.append("")
 
     if book_json.get("about_the_author"):
         lines.append("## About the Author")

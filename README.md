@@ -1,3 +1,5 @@
+<!-- python3 blinkistscraper --books books-list.txt --create-markdown --create-pdf --audio --concat-audio -->
+
 # blinkist-scraper
 
 A python script to download book summaries and audio from [Blinkist](https://www.blinkist.com/) and generate some pretty output files.
